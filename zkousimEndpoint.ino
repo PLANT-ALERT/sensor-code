@@ -184,7 +184,7 @@ void loop()
       char payload[100];
       serializeJson(data, payload, sizeof(payload));
 
-      String topicString = "/senzor/" + WiFi.macAddress();
+      String topicString = "/sensors/" + WiFi.macAddress();
       client.publish(topicString.c_str(), payload);
     }
 
