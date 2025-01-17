@@ -3,21 +3,12 @@
 #include <ArduinoJson.h>
 #include <PubSubClient.h>
 #include <DHT_Async.h>
+#include <credentials.h>
 
 #define DHT_SENSOR_TYPE DHT_TYPE_11
 #define DHT_SENSOR_PIN 4
 const int digitalPort = 5;
 const int analogPort = A0;
-
-// Define your default MQTT settings
-const char *default_mqtt_broker = "mqtt.rpi.jakubgrezl.cz";
-const char *default_mqtt_username = "chcispat";
-const char *default_mqtt_password = "Eeka7heh";
-const int default_mqtt_port = 3010;
-
-// AP Mode credentials
-const char *ap_ssid = "PLANTALERT-HOTSPOT";
-const char *ap_password = "12345678";
 
 // Global variables
 String client_ssid = "";
@@ -31,13 +22,16 @@ DHT_Async dht_sensor(DHT_SENSOR_PIN, DHT_SENSOR_TYPE);
 // HTTP server
 ESP8266WebServer server(80);
 
-String scanWiFiNetworks() {
+String scanWiFiNetworks()
+{
   int n = WiFi.scanNetworks(); // Perform WiFi scan
   Serial.println("Scanning for WiFi networks...");
 
   String json = "[";
-  for (int i = 0; i < n; i++) {
-    if (i > 0) json += ","; // Add a comma for JSON formatting
+  for (int i = 0; i < n; i++)
+  {
+    if (i > 0)
+      json += ","; // Add a comma for JSON formatting
     json += "{\"ssid\":\"" + WiFi.SSID(i) + "\",";
     json += "\"encryption\":" + String(WiFi.encryptionType(i)) + "}";
   }
@@ -49,24 +43,31 @@ String scanWiFiNetworks() {
   return json;
 }
 
-void startAP() {
-  WiFi.softAP(ap_ssid, ap_password);
+void startAP()
+{
+  String macAddress = WiFi.macAddress();
+
+  macAddress.replace(":", "");
+
+  macAddress = macAddress.substring(0, 5);
+  WiFi.softAP(ap_ssid + "-" + macAddress, ap_password);
   IPAddress IP = WiFi.softAPIP();
   Serial.print("AP IP address: ");
   Serial.println(IP);
 
-  server.on("/health", HTTP_GET, []() {
+  server.on("/health", HTTP_GET, []()
+            {
     server.sendHeader("Access-Control-Allow-Origin", "*");
-    server.send(200, "text/plain", "OK");
-  });
+    server.send(200, "text/plain", "OK"); });
 
-  server.on("/ssid", HTTP_GET, []() {
+  server.on("/ssid", HTTP_GET, []()
+            {
     String jsonResponse = scanWiFiNetworks();
     server.sendHeader("Access-Control-Allow-Origin", "*");
-    server.send(200, "application/json", jsonResponse);
-  });
+    server.send(200, "application/json", jsonResponse); });
 
- server.on("/connect", HTTP_POST, []() {
+  server.on("/connect", HTTP_POST, []()
+            {
     if (server.hasArg("ssid") && server.hasArg("password")) {
         client_ssid = server.arg("ssid");
         client_password = server.arg("password");
@@ -94,48 +95,56 @@ void startAP() {
         }
     } else {
         server.send(400, "text/plain", "Missing SSID or password.");
-    }
-});
-
+    } });
 
   server.begin();
   Serial.println("HTTP server started in AP mode.");
 }
 
-connectToWiFi() {
+connectToWiFi()
+{
   WiFi.begin(client_ssid.c_str(), client_password.c_str());
   Serial.println("Connecting to WiFi...");
 
   unsigned long startAttemptTime = millis();
 
-  while (WiFi.status() != WL_CONNECTED && millis() - startAttemptTime < 30000) {
+  while (WiFi.status() != WL_CONNECTED && millis() - startAttemptTime < 30000)
+  {
     delay(500);
     Serial.print(".");
   }
 
-  if (WiFi.status() == WL_CONNECTED) {
+  if (WiFi.status() == WL_CONNECTED)
+  {
     Serial.println("\nConnected to WiFi!");
     Serial.print("IP Address: ");
     Serial.println(WiFi.localIP());
     startMQTT();
-  } else {
+  }
+  else
+  {
     Serial.println("\nFailed to connect to WiFi. Restarting...");
     return 440;
   }
 }
 
-void startMQTT() {
+void startMQTT()
+{
   client.setServer(default_mqtt_broker, default_mqtt_port);
-  client.setCallback([](char *topic, byte *payload, unsigned int length) {
+  client.setCallback([](char *topic, byte *payload, unsigned int length)
+                     {
     Serial.print("Message arrived on topic: ");
-    Serial.println(topic);
-  });
+    Serial.println(topic); });
 
-  while (!client.connected()) {
+  while (!client.connected())
+  {
     String client_id = "esp8266-client-" + String(WiFi.macAddress());
-    if (client.connect(client_id.c_str(), default_mqtt_username, default_mqtt_password)) {
+    if (client.connect(client_id.c_str(), default_mqtt_username, default_mqtt_password))
+    {
       Serial.println("Connected to MQTT broker!");
-    } else {
+    }
+    else
+    {
       Serial.print("MQTT connection failed, state: ");
       Serial.println(client.state());
       delay(2000);
@@ -143,7 +152,8 @@ void startMQTT() {
   }
 }
 
-void setup() {
+void setup()
+{
   Serial.begin(115200);
 
   pinMode(digitalPort, INPUT);
@@ -153,8 +163,10 @@ void setup() {
   startAP();
 }
 
-void loop() {
-  if (WiFi.status() == WL_CONNECTED) {
+void loop()
+{
+  if (WiFi.status() == WL_CONNECTED)
+  {
     client.loop();
 
     StaticJsonDocument<200> data;
@@ -162,7 +174,8 @@ void loop() {
     float soil = analogRead(analogPort);
     float temperature, humidity;
 
-    if (dht_sensor.measure(&temperature, &humidity)) {
+    if (dht_sensor.measure(&temperature, &humidity))
+    {
       data["temp"] = temperature;
       data["humidity"] = humidity;
       data["soil"] = soil;
@@ -176,9 +189,9 @@ void loop() {
     }
 
     delay(5000);
-  } else {
+  }
+  else
+  {
     server.handleClient();
   }
 }
-
-
