@@ -1,5 +1,5 @@
-#include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
+#include <WiFiManager.h>
 #include <ArduinoJson.h>
 #include <PubSubClient.h>
 #include <BH1750.h>
@@ -9,9 +9,13 @@
 #include <Wire.h>
 #include "credentials.h"
 #include <EEPROM.h>
+#include <ESP8266HTTPClient.h>
+#include <WiFiClientSecure.h>
 
-#define EEPROM_SIZE 96
 #define MAX_WIFI_ATTEMPTS 10
+#define EEPROM_SIZE 96
+#define EEPROM_SSID_ADDR 0
+#define EEPROM_PASS_ADDR 32
 
 const int digitalPort = 5;
 const int analogPort = A0;
@@ -34,64 +38,94 @@ DHT_Unified dht(DHTPIN, DHTTYPE);
 
 // HTTP server
 ESP8266WebServer server(80);
+WiFiManager wifiManager;
 String mqttTopic;
+
+void saveWiFiCredentialsToEEPROM(const String &ssid, const String &password)
+{
+    for (unsigned int i = 0; i < 32; i++)
+    {
+        EEPROM.write(EEPROM_SSID_ADDR + i, i < (int)ssid.length() ? ssid[i] : 0);
+        EEPROM.write(EEPROM_PASS_ADDR + i, i < (int)password.length() ? password[i] : 0);
+    }
+    EEPROM.commit();
+}
+
+void loadWiFiCredentialsFromEEPROM()
+{
+    char ssid[33], pass[33];
+    for (int i = 0; i < 32; i++)
+    {
+        ssid[i] = EEPROM.read(EEPROM_SSID_ADDR + i);
+        pass[i] = EEPROM.read(EEPROM_PASS_ADDR + i);
+    }
+    ssid[32] = 0;
+    pass[32] = 0;
+    client_ssid = String(ssid);
+    client_password = String(pass);
+}
 
 String scanWiFiNetworks()
 {
-    int n = WiFi.scanNetworks(); // Perform WiFi scan
-    Serial.println("Scanning for WiFi networks...");
-
+    int n = WiFi.scanNetworks();
     String json = "[";
     for (int i = 0; i < n; i++)
     {
         if (i > 0)
-            json += ","; // Add a comma for JSON formatting
+            json += ",";
         json += "{\"ssid\":\"" + WiFi.SSID(i) + "\",";
         json += "\"encryption\":" + String(WiFi.encryptionType(i)) + "}";
     }
     json += "]";
-
-    Serial.println("Scan complete:");
-    Serial.println(json); // Debug output
-
     return json;
 }
 
-void saveWiFiCredentials(const String &ssid, const String &password)
+bool isRegistered()
 {
-    EEPROM.begin(EEPROM_SIZE);
-    for (int i = 0; i < ssid.length(); ++i)
+    if (WiFi.status() != WL_CONNECTED)
     {
-        EEPROM.write(i, ssid[i]);
+        Serial.println("WiFi not connected.");
+        return false;
     }
-    EEPROM.write(ssid.length(), '\0');
-    for (int i = 0; i < password.length(); ++i)
-    {
-        EEPROM.write(32 + i, password[i]);
-    }
-    EEPROM.write(32 + password.length(), '\0');
-    EEPROM.commit();
-}
 
-void loadWiFiCredentials()
-{
-    EEPROM.begin(EEPROM_SIZE);
-    client_ssid = "";
-    client_password = "";
-    for (int i = 0; i < 32; ++i)
+    WiFiClientSecure secureClient;
+    HTTPClient http;
+    String mac = WiFi.macAddress();
+    mac.replace(":", "");
+    String url = String(api_url) + "/sensors/am_i_registred/" + mac;
+    Serial.print("Calling api:");
+    Serial.println(url);
+
+    secureClient.setInsecure();
+    http.begin(secureClient, url);
+    int httpCode = http.GET();
+
+    Serial.print("HTTP Response code: ");
+    Serial.println(httpCode);
+
+    if (httpCode == 204)
     {
-        char c = EEPROM.read(i);
-        if (c == '\0')
-            break;
-        client_ssid += c;
+        Serial.println("Device is NOT registered. Clearing EEPROM and rebooting...");
+        for (int i = 0; i < 512; i++)
+        {
+            EEPROM.write(i, 0);
+        }
+        EEPROM.commit();
+        http.end();
+        ESP.restart(); // Reboot the device
+        return false;
     }
-    for (int i = 32; i < 96; ++i)
+
+    http.end();
+
+    if (httpCode == 200)
     {
-        char c = EEPROM.read(i);
-        if (c == '\0')
-            break;
-        client_password += c;
+        Serial.println("Device is registered.");
+        return true;
     }
+
+    Serial.println("Unexpected response. Not modifying EEPROM.");
+    return false;
 }
 
 void startMQTT()
@@ -115,9 +149,10 @@ void startMQTT()
 
 bool connectToWiFi()
 {
+    Serial.println(client_ssid.c_str());
+    Serial.println(client_password.c_str());
     WiFi.begin(client_ssid.c_str(), client_password.c_str());
     Serial.println("Connecting to WiFi...");
-
     int attempts = 0;
     while (WiFi.status() != WL_CONNECTED && attempts < MAX_WIFI_ATTEMPTS)
     {
@@ -125,7 +160,6 @@ bool connectToWiFi()
         Serial.print(".");
         attempts++;
     }
-
     if (WiFi.status() == WL_CONNECTED)
     {
         Serial.println("\nConnected to WiFi!");
@@ -149,23 +183,37 @@ void startAP()
 
     server.on("/ssid", HTTP_GET, []()
               {
-                  String jsonResponse = scanWiFiNetworks();
-                  server.sendHeader("Access-Control-Allow-Origin", "*");
-                  server.send(200, "application/json", jsonResponse); });
+    String jsonResponse = scanWiFiNetworks();
+    server.sendHeader("Access-Control-Allow-Origin", "*");
+    server.send(200, "application/json", jsonResponse); });
 
-    server.on("/connect", HTTP_POST, []()
+    server.on("/mac", HTTP_GET, []()
               {
-        if (server.hasArg("ssid") && server.hasArg("password")) {
-            client_ssid = server.arg("ssid");
-            client_password = server.arg("password");
-            saveWiFiCredentials(client_ssid, client_password);
+    server.sendHeader("Access-Control-Allow-Origin", "*");
+    server.send(200, "text/plain", WiFi.macAddress()); });
+
+    server.on("/connect", HTTP_GET, []()
+              {
             WiFi.softAPdisconnect(true);
             if (!connectToWiFi()) {
                 startAP();
-            }
-        } else {
-            server.send(400, "text/plain", "Missing SSID or password.");
-        } });
+      } });
+
+    server.on("/saveCredentials", HTTP_POST, []()
+              {
+    if (server.hasArg("ssid") && server.hasArg("password")) {
+      client_ssid = server.arg("ssid");
+      client_password = server.arg("password");
+      saveWiFiCredentialsToEEPROM(client_ssid, client_password);
+      Serial.println(client_ssid);
+      Serial.println(client_password);
+      server.send(200, "text/plain", "ok");
+    } else {
+      server.send(400, "text/plain", "Missing SSID or password.");
+    } });
+
+    server.on("/health", HTTP_GET, []()
+              { server.send(200, "ok"); });
 
     server.begin();
     Serial.println("HTTP server started in AP mode.");
@@ -180,11 +228,15 @@ void setup()
     dht.begin();
     Wire.begin(D2, D1);
     lightMeter.begin();
-    loadWiFiCredentials();
     mqttTopic = "/sensors/" + WiFi.macAddress();
+    loadWiFiCredentialsFromEEPROM();
     if (!connectToWiFi())
     {
         startAP();
+    }
+    else
+    {
+        isRegistered();
     }
 }
 
@@ -194,7 +246,6 @@ void loop()
     {
         client.loop();
         JsonDocument data;
-        int portValue = digitalRead(digitalPort);
         float soil = analogRead(analogPort);
         float lux = lightMeter.readLightLevel();
         sensors_event_t event;
