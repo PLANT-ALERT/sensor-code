@@ -257,9 +257,9 @@ void loop()
         data["humidity"] = humidity;
         data["soil"] = soil;
         data["light"] = lux;
-        char payload[100];
-        serializeJson(data, payload, sizeof(payload));
-        client.publish(mqttTopic.c_str(), payload);
+        String payload;
+        serializeJson(data, payload);
+        client.publish(mqttTopic.c_str(), payload.c_str());
         delay(5000);
     }
     else
