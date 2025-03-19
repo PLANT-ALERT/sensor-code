@@ -5,19 +5,17 @@
 #include <BH1750.h>
 #include <Adafruit_Sensor.h>
 #include <DHT.h>
-#include <DHT_U.h>
 #include <Wire.h>
 #include "credentials.h"
 #include <EEPROM.h>
 #include <ESP8266HTTPClient.h>
 #include <WiFiClientSecure.h>
 
-#define MAX_WIFI_ATTEMPTS 10
+#define MAX_WIFI_ATTEMPTS 100
 #define EEPROM_SIZE 96
 #define EEPROM_SSID_ADDR 0
 #define EEPROM_PASS_ADDR 32
 
-const int digitalPort = 5;
 const int analogPort = A0;
 
 // light sensor
@@ -32,9 +30,11 @@ WiFiClient espClient;
 PubSubClient client(espClient);
 
 // DHT11
-#define DHTPIN 4
+#define DHTPIN D5
 #define DHTTYPE DHT11
-DHT_Unified dht(DHTPIN, DHTTYPE);
+float Temperature;
+float Humidity;
+DHT dht(DHTPIN, DHTTYPE);
 
 // HTTP server
 ESP8266WebServer server(80);
@@ -156,7 +156,7 @@ bool connectToWiFi()
     int attempts = 0;
     while (WiFi.status() != WL_CONNECTED && attempts < MAX_WIFI_ATTEMPTS)
     {
-        delay(500);
+        delay(1000);
         Serial.print(".");
         attempts++;
     }
@@ -223,7 +223,6 @@ void setup()
 {
     Serial.begin(115200);
     EEPROM.begin(EEPROM_SIZE);
-    pinMode(digitalPort, INPUT);
     pinMode(analogPort, INPUT);
     dht.begin();
     Wire.begin(D2, D1);
@@ -246,17 +245,39 @@ void loop()
     {
         client.loop();
         JsonDocument data;
+
         float soil = analogRead(analogPort);
         float lux = lightMeter.readLightLevel();
-        sensors_event_t event;
-        dht.temperature().getEvent(&event);
-        float temperature = isnan(event.temperature) ? 0 : event.temperature;
-        dht.humidity().getEvent(&event);
-        float humidity = isnan(event.relative_humidity) ? 0 : event.relative_humidity;
+        float temperature = dht.readTemperature();
+        float humidity = dht.readHumidity();
+
+        Serial.println("---- Sensor Readings ----");
+        Serial.print("Soil Moisture (Analog Read): ");
+        Serial.println(soil);
+
+        Serial.print("Light Intensity (BH1750 Lux): ");
+        Serial.println(lux);
+
+        if (isnan(temperature) || isnan(humidity))
+        {
+            Serial.println("ERROR: Failed to read from DHT sensor!");
+        }
+        else
+        {
+            Serial.print("Temperature (DHT11): ");
+            Serial.print(temperature);
+            Serial.println("°C");
+
+            Serial.print("Humidity (DHT11): ");
+            Serial.print(humidity);
+            Serial.println("%");
+        }
+
         data["temp"] = temperature;
         data["humidity"] = humidity;
         data["soil"] = soil;
         data["light"] = lux;
+
         String payload;
         serializeJson(data, payload);
         client.publish(mqttTopic.c_str(), payload.c_str());
